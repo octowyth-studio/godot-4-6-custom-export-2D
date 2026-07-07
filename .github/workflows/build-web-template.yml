@@ -40,5 +40,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: thc_web_release_template
-          path: godot/bin/godot.web.template_release.wasm32.zip
+          path: godot/bin/*.zip
           retention-days: 90
