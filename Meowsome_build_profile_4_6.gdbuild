@@ -170,7 +170,6 @@
 		"MultiplayerAPI",
 		"MultiplayerSpawner",
 		"MultiplayerSynchronizer",
-		"Mutex",
 		"NativeMenu",
 		"NavigationAgent2D",
 		"NavigationAgent3D",
