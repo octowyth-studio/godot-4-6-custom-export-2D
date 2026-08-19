@@ -23,24 +23,74 @@ jobs:
 
       - run: emcc --version
 
-      - name: Compile web template
+      - name: Verify build profile exists
+        run: |
+          test -f "$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild"
+          python3 -c "import json; d=json.load(open('$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild')); print(len(d['disabled_classes']),'classes disabled')"
+
+      - name: Compile web template (release)
         working-directory: godot
         run: |
-          scons platform=web target=template_release optimize=size lto=full \
+          scons platform=web target=template_release \
+            build_profile="$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild" \
+            optimize=size lto=full \
             deprecated=no \
             disable_3d=yes \
             threads=no \
             module_msdfgen_enabled=yes \
+            module_minimp3_enabled=yes \
+            module_vorbis_enabled=no \
             module_text_server_adv_enabled=no module_text_server_fb_enabled=yes \
             module_websocket_enabled=no module_webrtc_enabled=no \
             module_enet_enabled=no module_upnp_enabled=no \
             module_theora_enabled=no module_webxr_enabled=no \
             module_gridmap_enabled=no module_mobile_vr_enabled=no \
-            module_minimp3_enabled=no module_regex_enabled=no \
+            module_regex_enabled=no \
             module_camera_enabled=no module_noise_enabled=no
+
+      - name: Compile web template (debug)
+        working-directory: godot
+        run: |
+          scons platform=web target=template_debug \
+            build_profile="$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild" \
+            optimize=size lto=full \
+            deprecated=no \
+            disable_3d=yes \
+            threads=no \
+            module_msdfgen_enabled=yes \
+            module_minimp3_enabled=yes \
+            module_vorbis_enabled=no \
+            module_text_server_adv_enabled=no module_text_server_fb_enabled=yes \
+            module_websocket_enabled=no module_webrtc_enabled=no \
+            module_enet_enabled=no module_upnp_enabled=no \
+            module_theora_enabled=no module_webxr_enabled=no \
+            module_gridmap_enabled=no module_mobile_vr_enabled=no \
+            module_regex_enabled=no \
+            module_camera_enabled=no module_noise_enabled=no
+
+      - name: Stage and rename templates
+        run: |
+          mkdir -p out
+          cp godot/bin/godot.web.template_release.wasm32.nothreads.zip out/web_nothreads_release.zip
+          cp godot/bin/godot.web.template_debug.wasm32.nothreads.zip   out/web_nothreads_debug.zip
+          ls -l out
+
+      - name: Marker scan
+        run: |
+          cd out
+          for z in web_nothreads_release.zip web_nothreads_debug.zip; do
+            echo "== $z"
+            unzip -o -q "$z" -d "${z%.zip}"
+            W=$(ls "${z%.zip}"/*.wasm)
+            for m in patch_margin_left CPUParticles2D joint_mode AudioStreamPlaybackMP3 22AudioStreamPlaybackWAV; do
+              if grep -qa "$m" "$W"; then echo "  OK      $m"; else echo "  MISSING $m"; exit 1; fi
+            done
+            if grep -qa 'Compiled without MSDFGEN support!' "$W"; then echo "  MISSING msdfgen"; exit 1; else echo "  OK      msdfgen"; fi
+            rm -rf "${z%.zip}"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: thc_web_release_template
-          path: godot/bin/*.zip
+          name: thc_web_template_4_6
+          path: out/*.zip
           retention-days: 90
