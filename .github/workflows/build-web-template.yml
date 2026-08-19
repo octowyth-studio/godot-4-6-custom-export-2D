@@ -26,8 +26,8 @@ jobs:
       - name: Verify build profile exists
         run: |
           test -f "$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild"
-          python3 -c "import json; d=json.load(open('$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild')); print(len(d['disabled_classes']),'classes disabled')"
-
+          python3 -c "import json; d=json.load(open('$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild')); c=d['disabled_classes']; assert 'Mutex' not in c, 'Mutex breaks the build'; print(len(c),'classes disabled')"
+          
       - name: Compile web template (release)
         working-directory: godot
         run: |
