@@ -1,4 +1,5 @@
 name: build-web-template
+
 on: workflow_dispatch
 
 env:
@@ -30,37 +31,63 @@ jobs:
           classes = set(data["disabled_classes"])
           options = data.get("disabled_build_options", {})
 
-          # Marker string -> the thing that must stay enabled to keep that string.
+          # Classes the engine cannot boot without.
+          CORE = [
+              "ClassDB", "Mutex", "Thread", "Semaphore", "WorkerThreadPool",
+              "RenderingServer", "Script", "ScriptLanguage", "GDScriptNativeClass",
+              "Window", "Theme", "ThemeDB", "ThemeContext", "InputMap", "SceneState",
+              "TextServerManager", "TranslationServer", "ResourceFormatLoader",
+              "ResourceFormatSaver", "ResourceSaver", "ResourceUID", "ImageTexture",
+              "World2D", "Performance", "Logger", "WeakRef", "Timer", "EngineDebugger",
+          ]
+
+          # Marker string -> the class that must stay enabled to keep that string.
           MARKERS = {
-              "patch_margin_left": ("class", "NinePatchRect"),
-              "CPUParticles2D": ("class", "CPUParticles2D"),
-              "joint_mode": ("class", "Joint2D"),
-              "AudioStreamPlaybackMP3": ("class", "AudioStreamMP3"),
-              "22AudioStreamPlaybackWAV": ("class", "AudioStreamWAV"),
-              "msdfgen": ("option", "module_msdfgen_enabled"),
+              "Sprite2D": "Sprite2D",
+              "ShaderMaterial": "ShaderMaterial",
+              "AudioStreamOggVorbis": "AudioStreamOggVorbis",
+              "FontFile": "FontFile",
+              "JavaScriptBridge": "JavaScriptBridge",
+              "CanvasLayer": "CanvasLayer",
+          }
+
+          # Base class -> subclasses that must be disabled together with it.
+          PAIRS = {
+              "CollisionObject2D": ["Area2D", "PhysicsBody2D", "CharacterBody2D", "StaticBody2D", "RigidBody2D"],
+              "Shape2D": ["CircleShape2D", "RectangleShape2D", "CapsuleShape2D"],
+              "AudioStreamPlayback": ["AudioStreamOggVorbis"],
+              "Texture2D": ["ImageTexture", "AtlasTexture", "CompressedTexture2D"],
           }
 
           errors = []
 
-          if "Mutex" in classes:
-              errors.append("disabled_classes has Mutex - this breaks the build")
+          for name in CORE:
+              if name in classes:
+                  errors.append(f"disabled_classes has {name} - the engine will not boot")
 
-          for marker, (kind, name) in MARKERS.items():
-              if kind == "class" and name in classes:
+          for marker, name in MARKERS.items():
+              if name in classes:
                   errors.append(f"disabled_classes has {name} - marker '{marker}' will be stripped")
-              if kind == "option" and options.get(name) is False:
-                  errors.append(f"disabled_build_options turns off {name} - marker '{marker}' will fail")
+
+          for base, children in PAIRS.items():
+              if base in classes:
+                  kept = [c for c in children if c not in classes and c != base]
+                  if kept:
+                      errors.append(f"{base} is disabled but these subclasses stay enabled: {kept}")
 
           if options.get("disable_physics_2d") is True:
               kept = [c for c in ("Area2D", "CharacterBody2D", "CircleShape2D") if c not in classes]
               if kept:
                   errors.append(f"disable_physics_2d is true but these 2D physics classes stay enabled: {kept}")
 
+          if options.get("module_msdfgen_enabled") is False and "FontVariation" not in classes:
+              errors.append("msdfgen is off but FontVariation stays enabled - use bitmap fonts only")
+
           print(len(classes), "classes disabled")
           if errors:
               print("\nProfile is not compatible with this workflow:")
               for e in errors:
-                  print("  -", e)
+                  print(" -", e)
               sys.exit(1)
           print("profile OK")
           PY
@@ -89,11 +116,16 @@ jobs:
             cache_path=~/.scons_cache cache_limit=4 \
             optimize=size lto=full \
             deprecated=no \
-            disable_3d=yes \
             threads=no \
-            module_msdfgen_enabled=yes \
-            module_minimp3_enabled=yes \
-            module_vorbis_enabled=no \
+            disable_3d=yes \
+            disable_navigation_2d=yes \
+            disable_navigation_3d=yes \
+            disable_xr=yes \
+            minizip=no \
+            module_msdfgen_enabled=no \
+            module_minimp3_enabled=no \
+            module_vorbis_enabled=yes \
+            module_svg_enabled=no \
             module_text_server_adv_enabled=no module_text_server_fb_enabled=yes \
             module_websocket_enabled=no module_webrtc_enabled=no \
             module_enet_enabled=no module_upnp_enabled=no \
@@ -110,11 +142,16 @@ jobs:
             cache_path=~/.scons_cache cache_limit=4 \
             optimize=size lto=none \
             deprecated=no \
-            disable_3d=yes \
             threads=no \
-            module_msdfgen_enabled=yes \
-            module_minimp3_enabled=yes \
-            module_vorbis_enabled=no \
+            disable_3d=yes \
+            disable_navigation_2d=yes \
+            disable_navigation_3d=yes \
+            disable_xr=yes \
+            minizip=no \
+            module_msdfgen_enabled=no \
+            module_minimp3_enabled=no \
+            module_vorbis_enabled=yes \
+            module_svg_enabled=no \
             module_text_server_adv_enabled=no module_text_server_fb_enabled=yes \
             module_websocket_enabled=no module_webrtc_enabled=no \
             module_enet_enabled=no module_upnp_enabled=no \
@@ -144,15 +181,27 @@ jobs:
             echo "== $z"
             unzip -o -q "$z" -d "${z%.zip}"
             W=$(ls "${z%.zip}"/*.wasm)
-            for m in patch_margin_left CPUParticles2D joint_mode AudioStreamPlaybackMP3 22AudioStreamPlaybackWAV; do
-              if grep -qa "$m" "$W"; then echo "  OK      $m"; else echo "  MISSING $m"; exit 1; fi
+            for m in Sprite2D ShaderMaterial AudioStreamOggVorbis FontFile JavaScriptBridge CanvasLayer; do
+              if grep -qa "$m" "$W"; then echo "  OK $m"; else echo "  MISSING $m"; exit 1; fi
             done
-            if grep -qa 'Compiled without MSDFGEN support!' "$W"; then echo "  MISSING msdfgen"; exit 1; else echo "  OK      msdfgen"; fi
             rm -rf "${z%.zip}"
           done
 
+      - name: Size report
+        run: |
+          set -euo pipefail
+          cd out
+          unzip -o -q web_nothreads_release.zip -d rel
+          W=$(ls rel/*.wasm)
+          gzip -9 -c "$W" > wasm.gz
+          brotli -q 11 -c "$W" > wasm.br || true
+          printf "raw    %s\n" "$(stat -c %s "$W")"
+          printf "gzip   %s\n" "$(stat -c %s wasm.gz)"
+          test -s wasm.br && printf "brotli %s\n" "$(stat -c %s wasm.br)"
+          rm -rf rel wasm.gz wasm.br
+
       - uses: actions/upload-artifact@v4
         with:
-          name: thc_web_template_4_6
+          name: necrowake_web_template_4_6
           path: out/*.zip
           retention-days: 90
