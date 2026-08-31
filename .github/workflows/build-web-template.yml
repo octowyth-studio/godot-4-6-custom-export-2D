@@ -1,6 +1,10 @@
 name: build-web-template
-
 on: workflow_dispatch
+
+env:
+  PROFILE: necrowake_godot_4_6.gdbuild
+  GODOT_REF: 4.6-stable
+  EMSDK_VERSION: 4.0.10
 
 jobs:
   build:
@@ -12,27 +16,77 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: godotengine/godot
-          ref: 4.6-stable
+          ref: ${{ env.GODOT_REF }}
           path: godot
+
+      # Preflight runs before emsdk, so a bad profile fails in seconds, not hours.
+      - name: Verify build profile
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          path = os.environ["PROFILE"]
+          data = json.load(open(path))
+          classes = set(data["disabled_classes"])
+          options = data.get("disabled_build_options", {})
+
+          # Marker string -> the thing that must stay enabled to keep that string.
+          MARKERS = {
+              "patch_margin_left": ("class", "NinePatchRect"),
+              "CPUParticles2D": ("class", "CPUParticles2D"),
+              "joint_mode": ("class", "Joint2D"),
+              "AudioStreamPlaybackMP3": ("class", "AudioStreamMP3"),
+              "22AudioStreamPlaybackWAV": ("class", "AudioStreamWAV"),
+              "msdfgen": ("option", "module_msdfgen_enabled"),
+          }
+
+          errors = []
+
+          if "Mutex" in classes:
+              errors.append("disabled_classes has Mutex - this breaks the build")
+
+          for marker, (kind, name) in MARKERS.items():
+              if kind == "class" and name in classes:
+                  errors.append(f"disabled_classes has {name} - marker '{marker}' will be stripped")
+              if kind == "option" and options.get(name) is False:
+                  errors.append(f"disabled_build_options turns off {name} - marker '{marker}' will fail")
+
+          if options.get("disable_physics_2d") is True:
+              kept = [c for c in ("Area2D", "CharacterBody2D", "CircleShape2D") if c not in classes]
+              if kept:
+                  errors.append(f"disable_physics_2d is true but these 2D physics classes stay enabled: {kept}")
+
+          print(len(classes), "classes disabled")
+          if errors:
+              print("\nProfile is not compatible with this workflow:")
+              for e in errors:
+                  print("  -", e)
+              sys.exit(1)
+          print("profile OK")
+          PY
 
       - uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 4.0.6
+          version: ${{ env.EMSDK_VERSION }}
+          actions-cache-folder: emsdk-cache
 
-      - run: pip install scons
+      - run: pip install "scons>=4.4"
 
       - run: emcc --version
 
-      - name: Verify build profile
-        run: |
-          test -f "$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild"
-          python3 -c "import json; d=json.load(open('$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild')); c=d['disabled_classes']; assert 'Mutex' not in c, 'Mutex breaks the build'; print(len(c),'classes disabled')"
+      - name: Restore SCons cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.scons_cache
+          key: scons-web-${{ env.GODOT_REF }}-${{ env.EMSDK_VERSION }}-${{ github.run_id }}
+          restore-keys: scons-web-${{ env.GODOT_REF }}-${{ env.EMSDK_VERSION }}-
 
       - name: Compile web template (release)
         working-directory: godot
         run: |
           scons platform=web target=template_release \
-            build_profile="$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild" \
+            build_profile="$GITHUB_WORKSPACE/$PROFILE" \
+            cache_path=~/.scons_cache cache_limit=4 \
             optimize=size lto=full \
             deprecated=no \
             disable_3d=yes \
@@ -52,8 +106,9 @@ jobs:
         working-directory: godot
         run: |
           scons platform=web target=template_debug \
-            build_profile="$GITHUB_WORKSPACE/Meowsome_build_profile_4_6.gdbuild" \
-            optimize=size lto=full \
+            build_profile="$GITHUB_WORKSPACE/$PROFILE" \
+            cache_path=~/.scons_cache cache_limit=4 \
+            optimize=size lto=none \
             deprecated=no \
             disable_3d=yes \
             threads=no \
@@ -70,13 +125,20 @@ jobs:
 
       - name: Stage and rename templates
         run: |
+          set -euo pipefail
           mkdir -p out
-          cp godot/bin/godot.web.template_release.wasm32.nothreads.zip out/web_nothreads_release.zip
-          cp godot/bin/godot.web.template_debug.wasm32.nothreads.zip   out/web_nothreads_debug.zip
+          shopt -s nullglob
+          rel=(godot/bin/godot.web.template_release.wasm32*.zip)
+          dbg=(godot/bin/godot.web.template_debug.wasm32*.zip)
+          test ${#rel[@]} -eq 1 || { echo "release zip not found or ambiguous: ${rel[*]:-none}"; ls -l godot/bin; exit 1; }
+          test ${#dbg[@]} -eq 1 || { echo "debug zip not found or ambiguous: ${dbg[*]:-none}"; ls -l godot/bin; exit 1; }
+          cp "${rel[0]}" out/web_nothreads_release.zip
+          cp "${dbg[0]}" out/web_nothreads_debug.zip
           ls -l out
 
       - name: Marker scan
         run: |
+          set -euo pipefail
           cd out
           for z in web_nothreads_release.zip web_nothreads_debug.zip; do
             echo "== $z"
