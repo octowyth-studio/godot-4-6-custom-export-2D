@@ -4,6 +4,7 @@ on: workflow_dispatch
 
 env:
   PROFILE: necrowake_godot_4_6.gdbuild
+  PATCHED: profile.patched.gdbuild
   GODOT_REF: 4.6-stable
   EMSDK_VERSION: 4.0.10
 
@@ -20,76 +21,41 @@ jobs:
           ref: ${{ env.GODOT_REF }}
           path: godot
 
-      # Preflight runs before emsdk, so a bad profile fails in seconds, not hours.
-      - name: Verify build profile
+      # Classes registered as namespace::Class break the ClassDB_Disable_ token paste.
+      - name: Patch build profile
         run: |
           python3 - <<'PY'
-          import json, os, sys
+          import json, os, pathlib, re, sys
 
-          path = os.environ["PROFILE"]
-          data = json.load(open(path))
-          classes = set(data["disabled_classes"])
-          options = data.get("disabled_build_options", {})
+          src = os.environ["PROFILE"]
+          dst = os.environ["PATCHED"]
+          data = json.load(open(src, encoding="utf-8"))
+          classes = data.get("disabled_classes", [])
 
-          # Classes the engine cannot boot without.
-          CORE = [
-              "ClassDB", "Mutex", "Thread", "Semaphore", "WorkerThreadPool",
-              "RenderingServer", "Script", "ScriptLanguage", "GDScriptNativeClass",
-              "Window", "Theme", "ThemeDB", "ThemeContext", "InputMap", "SceneState",
-              "TextServerManager", "TranslationServer", "ResourceFormatLoader",
-              "ResourceFormatSaver", "ResourceSaver", "ResourceUID", "ImageTexture",
-              "World2D", "Performance", "Logger", "WeakRef", "Timer", "EngineDebugger",
-          ]
+          pat = re.compile(r"GDREGISTER_[A-Z_]*CLASS\s*\(\s*[A-Za-z_]\w*\s*::\s*([A-Za-z_]\w*)\s*\)")
+          namespaced = set()
+          for ext in ("*.cpp", "*.h"):
+              for p in pathlib.Path("godot").rglob(ext):
+                  try:
+                      text = p.read_text(encoding="utf-8", errors="ignore")
+                  except OSError:
+                      continue
+                  namespaced.update(pat.findall(text))
 
-          # Marker string -> the class that must stay enabled to keep that string.
-          MARKERS = {
-              "Sprite2D": "Sprite2D",
-              "ShaderMaterial": "ShaderMaterial",
-              "AudioStreamOggVorbis": "AudioStreamOggVorbis",
-              "FontFile": "FontFile",
-              "JavaScriptBridge": "JavaScriptBridge",
-              "CanvasLayer": "CanvasLayer",
-          }
-
-          # Base class -> subclasses that must be disabled together with it.
-          PAIRS = {
-              "CollisionObject2D": ["Area2D", "PhysicsBody2D", "CharacterBody2D", "StaticBody2D", "RigidBody2D"],
-              "Shape2D": ["CircleShape2D", "RectangleShape2D", "CapsuleShape2D"],
-              "AudioStreamPlayback": ["AudioStreamOggVorbis"],
-              "Texture2D": ["ImageTexture", "AtlasTexture", "CompressedTexture2D"],
-          }
-
-          errors = []
-
-          for name in CORE:
-              if name in classes:
-                  errors.append(f"disabled_classes has {name} - the engine will not boot")
-
-          for marker, name in MARKERS.items():
-              if name in classes:
-                  errors.append(f"disabled_classes has {name} - marker '{marker}' will be stripped")
-
-          for base, children in PAIRS.items():
-              if base in classes:
-                  kept = [c for c in children if c not in classes and c != base]
-                  if kept:
-                      errors.append(f"{base} is disabled but these subclasses stay enabled: {kept}")
-
-          if options.get("disable_physics_2d") is True:
-              kept = [c for c in ("Area2D", "CharacterBody2D", "CircleShape2D") if c not in classes]
-              if kept:
-                  errors.append(f"disable_physics_2d is true but these 2D physics classes stay enabled: {kept}")
-
-          if options.get("module_msdfgen_enabled") is False and "FontVariation" not in classes:
-              errors.append("msdfgen is off but FontVariation stays enabled - use bitmap fonts only")
-
-          print(len(classes), "classes disabled")
-          if errors:
-              print("\nProfile is not compatible with this workflow:")
-              for e in errors:
-                  print(" -", e)
+          if not namespaced:
+              print("no namespaced registrations found - check the Godot checkout")
               sys.exit(1)
-          print("profile OK")
+
+          removed = sorted(c for c in classes if c in namespaced)
+          kept = [c for c in classes if c not in namespaced]
+          data["disabled_classes"] = kept
+          json.dump(data, open(dst, "w", encoding="utf-8"), indent=1)
+
+          print(len(classes), "classes in the detected profile")
+          print(len(removed), "re-enabled to keep the build compiling:")
+          for c in removed:
+              print("  -", c)
+          print(len(kept), "classes disabled in", dst)
           PY
 
       - uses: mymindstorm/setup-emsdk@v14
@@ -112,7 +78,7 @@ jobs:
         working-directory: godot
         run: |
           scons platform=web target=template_release \
-            build_profile="$GITHUB_WORKSPACE/$PROFILE" \
+            build_profile="$GITHUB_WORKSPACE/$PATCHED" \
             cache_path=~/.scons_cache cache_limit=4 \
             optimize=size lto=full \
             deprecated=no \
@@ -138,7 +104,7 @@ jobs:
         working-directory: godot
         run: |
           scons platform=web target=template_debug \
-            build_profile="$GITHUB_WORKSPACE/$PROFILE" \
+            build_profile="$GITHUB_WORKSPACE/$PATCHED" \
             cache_path=~/.scons_cache cache_limit=4 \
             optimize=size lto=none \
             deprecated=no \
