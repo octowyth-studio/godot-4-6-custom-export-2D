@@ -1,4 +1,4 @@
-name: Build Gem Workshop Web template
+name: Build compatible Gem Workshop Web template
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
         description: Match the Godot editor used to export the game
         type: choice
         required: true
-        default: 4.6-stable
+        default: 4.6.1-stable
         options:
           - 4.6-stable
           - 4.6.1-stable
@@ -55,15 +55,17 @@ jobs:
           assert profile['disabled_classes'] == [], 'Do not replace this with an auto-detected class list.'
           tree = ast.parse(Path('GemWorkshop_web.py').read_text())
           flags = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)}
-          for name in ('javascript_eval', 'module_gdscript_enabled', 'module_webp_enabled', 'module_mp3_enabled', 'module_freetype_enabled', 'module_msdfgen_enabled', 'module_text_server_fb_enabled'):
+          for name in ('javascript_eval', 'module_gdscript_enabled', 'module_webp_enabled', 'module_mp3_enabled', 'module_freetype_enabled', 'module_msdfgen_enabled', 'module_text_server_adv_enabled'):
               assert flags.get(name) is True, f'Required feature disabled: {name}'
+          for name in ('threads', 'dlink_enabled', 'wasm_simd', 'module_text_server_fb_enabled'):
+              assert flags.get(name) is False, f'Incompatible build flag: {name}'
           PY
 
       - name: Restore compiler cache
         uses: actions/cache@v4
         with:
           path: out/scons_cache
-          key: gem-web-v1-${{ runner.os }}-${{ inputs.godot_ref }}-${{ env.EMSDK_VERSION }}-${{ hashFiles('GemWorkshop_web.gdbuild', 'GemWorkshop_web.py', 'build_template.sh') }}
+          key: gem-web-v2-${{ runner.os }}-${{ inputs.godot_ref }}-${{ env.EMSDK_VERSION }}-${{ hashFiles('GemWorkshop_web.gdbuild', 'GemWorkshop_web.py', 'build_template.sh') }}
 
       - name: Compile release template
         run: bash build_template.sh godot out
@@ -78,7 +80,7 @@ jobs:
       - name: Download template and size report
         uses: actions/upload-artifact@v4
         with:
-          name: gem-workshop-web-${{ inputs.godot_ref }}
+          name: gem-workshop-compatible-web-${{ inputs.godot_ref }}
           path: |
             out/web_nothreads_release.zip
             out/size_report.json
