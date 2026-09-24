@@ -1,225 +1,91 @@
-name: build-web-template
+name: Build Gem Workshop Web template
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      godot_ref:
+        description: Match the Godot editor used to export the game
+        type: choice
+        required: true
+        default: 4.6-stable
+        options:
+          - 4.6-stable
+          - 4.6.1-stable
+
+permissions:
+  contents: read
 
 env:
-  PROFILE: CatCafeOrders_build_profile_4_6.gdbuild
-  PATCHED: profile.patched.gdbuild
-  GODOT_REF: 4.6-stable
-  # Official Godot 4.6 web templates ship on Emscripten 4.0.20.
-  # 4.0.10 is proven on your Necrowake run. Bump only if you want to match official.
-  EMSDK_VERSION: 4.0.10
+  EMSDK_VERSION: 4.0.20
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/checkout@v4
         with:
           repository: godotengine/godot
-          ref: ${{ env.GODOT_REF }}
+          ref: ${{ inputs.godot_ref }}
           path: godot
-
-      # Classes registered as namespace::Class break the ClassDB_Disable_ token paste.
-      - name: Patch build profile
-        run: |
-          python3 - <<'PY'
-          import json, os, pathlib, re, sys
-
-          src = os.environ["PROFILE"]
-          dst = os.environ["PATCHED"]
-          data = json.load(open(src, encoding="utf-8"))
-          classes = data.get("disabled_classes", [])
-
-          pat = re.compile(r"GDREGISTER_[A-Z_]*CLASS\s*\(\s*[A-Za-z_]\w*\s*::\s*([A-Za-z_]\w*)\s*\)")
-          namespaced = set()
-          for ext in ("*.cpp", "*.h"):
-              for p in pathlib.Path("godot").rglob(ext):
-                  try:
-                      text = p.read_text(encoding="utf-8", errors="ignore")
-                  except OSError:
-                      continue
-                  namespaced.update(pat.findall(text))
-
-          if not namespaced:
-              print("no namespaced registrations found - check the Godot checkout")
-              sys.exit(1)
-
-          removed = sorted(c for c in classes if c in namespaced)
-          kept = [c for c in classes if c not in namespaced]
-          data["disabled_classes"] = kept
-          json.dump(data, open(dst, "w", encoding="utf-8"), indent=1)
-
-          print(len(classes), "classes in the detected profile")
-          print(len(removed), "re-enabled to keep the build compiling:")
-          for c in removed:
-              print("  -", c)
-          print(len(kept), "classes disabled in", dst)
-          PY
-
-      # Fails fast if the profile disables a class CatCafeMatch needs at runtime.
-      - name: Guard required classes
-        run: |
-          python3 - <<'PY'
-          import json, os, sys
-          required = {
-              "AudioBusLayout", "AudioStreamMP3", "AudioStreamWAV",
-              "AudioSample", "AudioSamplePlayback", "AudioStreamPlayback",
-              "AtlasTexture", "AnimatedSprite2D", "SpriteFrames",
-              "TextServer", "TextServerManager", "TextLine", "TextParagraph",
-              "Font", "LabelSettings", "VBoxContainer", "ScrollContainer",
-              "NinePatchRect", "TextureButton", "HSlider", "ProgressBar",
-              "ColorRect", "Script", "Engine",
-          }
-          data = json.load(open(os.environ["PATCHED"], encoding="utf-8"))
-          bad = sorted(required & set(data.get("disabled_classes", [])))
-          if bad:
-              print("profile disables classes the project uses:")
-              for c in bad:
-                  print("  -", c)
-              sys.exit(1)
-          print("class guard passed")
-          PY
+          persist-credentials: false
 
       - uses: mymindstorm/setup-emsdk@v14
         with:
           version: ${{ env.EMSDK_VERSION }}
           actions-cache-folder: emsdk-cache
 
-      - run: pip install "scons>=4.4"
+      - name: Install build tools
+        run: |
+          python3 -m venv /tmp/gem-build-tools
+          /tmp/gem-build-tools/bin/pip install 'scons>=4.4,<5' brotli
+          echo '/tmp/gem-build-tools/bin' >> "$GITHUB_PATH"
 
-      - run: emcc --version
+      - name: Check the manual configuration
+        run: |
+          python3 - <<'PY'
+          import ast, json
+          from pathlib import Path
+          profile = json.loads(Path('GemWorkshop_web.gdbuild').read_text())
+          assert profile['type'] == 'build_profile'
+          assert profile['disabled_classes'] == [], 'Do not replace this with an auto-detected class list.'
+          tree = ast.parse(Path('GemWorkshop_web.py').read_text())
+          flags = {node.targets[0].id: ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)}
+          for name in ('javascript_eval', 'module_gdscript_enabled', 'module_webp_enabled', 'module_mp3_enabled', 'module_freetype_enabled', 'module_msdfgen_enabled', 'module_text_server_fb_enabled'):
+              assert flags.get(name) is True, f'Required feature disabled: {name}'
+          PY
 
-      - name: Restore SCons cache
+      - name: Restore compiler cache
         uses: actions/cache@v4
         with:
-          path: ~/.scons_cache
-          key: scons-web-${{ env.GODOT_REF }}-${{ env.EMSDK_VERSION }}-${{ github.run_id }}
-          restore-keys: scons-web-${{ env.GODOT_REF }}-${{ env.EMSDK_VERSION }}-
+          path: out/scons_cache
+          key: gem-web-v1-${{ runner.os }}-${{ inputs.godot_ref }}-${{ env.EMSDK_VERSION }}-${{ hashFiles('GemWorkshop_web.gdbuild', 'GemWorkshop_web.py', 'build_template.sh') }}
 
-      - name: Compile web template (release)
-        working-directory: godot
+      - name: Compile release template
+        run: bash build_template.sh godot out
+
+      - name: Record source and compiler versions
         run: |
-          scons platform=web target=template_release \
-            build_profile="$GITHUB_WORKSPACE/$PATCHED" \
-            cache_path=~/.scons_cache cache_limit=4 \
-            optimize=size lto=full \
-            deprecated=no \
-            threads=no \
-            disable_3d=yes \
-            disable_physics_2d=yes \
-            disable_physics_3d=yes \
-            disable_navigation_2d=yes \
-            disable_navigation_3d=yes \
-            disable_xr=yes \
-            minizip=no \
-            module_text_server_adv_enabled=no module_text_server_fb_enabled=yes \
-            module_ogg_enabled=no module_vorbis_enabled=no module_theora_enabled=no \
-            module_interactive_music_enabled=no \
-            module_jpg_enabled=no module_bmp_enabled=no module_dds_enabled=no \
-            module_hdr_enabled=no module_ktx_enabled=no module_tinyexr_enabled=no \
-            module_svg_enabled=no \
-            module_basis_universal_enabled=no module_astcenc_enabled=no \
-            module_betsy_enabled=no module_bcdec_enabled=no \
-            module_cvtt_enabled=no module_etcpak_enabled=no module_squish_enabled=no \
-            module_gltf_enabled=no module_csg_enabled=no module_gridmap_enabled=no \
-            module_meshoptimizer_enabled=no module_xatlas_unwrap_enabled=no \
-            module_raycast_enabled=no module_lightmapper_rd_enabled=no \
-            module_websocket_enabled=no module_webrtc_enabled=no \
-            module_enet_enabled=no module_upnp_enabled=no \
-            module_multiplayer_enabled=no module_jsonrpc_enabled=no \
-            module_mbedtls_enabled=no \
-            module_camera_enabled=no module_noise_enabled=no \
-            module_webxr_enabled=no module_openxr_enabled=no \
-            module_mobile_vr_enabled=no \
-            module_regex_enabled=no module_zip_enabled=no
+          git -C godot rev-parse HEAD > out/source_commit.txt
+          emcc --version > out/compiler_version.txt
+          scons --version > out/scons_version.txt
+          cp GemWorkshop_web.gdbuild GemWorkshop_web.py out/
 
-      - name: Compile web template (debug)
-        working-directory: godot
-        run: |
-          scons platform=web target=template_debug \
-            build_profile="$GITHUB_WORKSPACE/$PATCHED" \
-            cache_path=~/.scons_cache cache_limit=4 \
-            optimize=size lto=none \
-            deprecated=no \
-            threads=no \
-            disable_3d=yes \
-            disable_physics_2d=yes \
-            disable_physics_3d=yes \
-            disable_navigation_2d=yes \
-            disable_navigation_3d=yes \
-            disable_xr=yes \
-            minizip=no \
-            module_text_server_adv_enabled=no module_text_server_fb_enabled=yes \
-            module_ogg_enabled=no module_vorbis_enabled=no module_theora_enabled=no \
-            module_interactive_music_enabled=no \
-            module_jpg_enabled=no module_bmp_enabled=no module_dds_enabled=no \
-            module_hdr_enabled=no module_ktx_enabled=no module_tinyexr_enabled=no \
-            module_svg_enabled=no \
-            module_basis_universal_enabled=no module_astcenc_enabled=no \
-            module_betsy_enabled=no module_bcdec_enabled=no \
-            module_cvtt_enabled=no module_etcpak_enabled=no module_squish_enabled=no \
-            module_gltf_enabled=no module_csg_enabled=no module_gridmap_enabled=no \
-            module_meshoptimizer_enabled=no module_xatlas_unwrap_enabled=no \
-            module_raycast_enabled=no module_lightmapper_rd_enabled=no \
-            module_websocket_enabled=no module_webrtc_enabled=no \
-            module_enet_enabled=no module_upnp_enabled=no \
-            module_multiplayer_enabled=no module_jsonrpc_enabled=no \
-            module_mbedtls_enabled=no \
-            module_camera_enabled=no module_noise_enabled=no \
-            module_webxr_enabled=no module_openxr_enabled=no \
-            module_mobile_vr_enabled=no \
-            module_regex_enabled=no module_zip_enabled=no
-
-      - name: Stage and rename templates
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          shopt -s nullglob
-          rel=(godot/bin/godot.web.template_release.wasm32*.zip)
-          dbg=(godot/bin/godot.web.template_debug.wasm32*.zip)
-          test ${#rel[@]} -eq 1 || { echo "release zip not found or ambiguous: ${rel[*]:-none}"; ls -l godot/bin; exit 1; }
-          test ${#dbg[@]} -eq 1 || { echo "debug zip not found or ambiguous: ${dbg[*]:-none}"; ls -l godot/bin; exit 1; }
-          cp "${rel[0]}" out/web_nothreads_release.zip
-          cp "${dbg[0]}" out/web_nothreads_debug.zip
-          ls -l out
-
-      - name: Marker scan
-        run: |
-          set -euo pipefail
-          cd out
-          for z in web_nothreads_release.zip web_nothreads_debug.zip; do
-            echo "== $z"
-            unzip -o -q "$z" -d "${z%.zip}"
-            W=$(ls "${z%.zip}"/*.wasm)
-            for m in Sprite2D AnimatedSprite2D SpriteFrames AtlasTexture \
-                     NinePatchRect TextureButton ScrollContainer VBoxContainer \
-                     HSlider ProgressBar CanvasLayer \
-                     AudioStreamMP3 AudioStreamWAV AudioBusLayout \
-                     TextServer JavaScriptBridge; do
-              if grep -qa "$m" "$W"; then echo "  OK $m"; else echo "  MISSING $m"; exit 1; fi
-            done
-            rm -rf "${z%.zip}"
-          done
-
-      - name: Size report
-        run: |
-          set -euo pipefail
-          cd out
-          unzip -o -q web_nothreads_release.zip -d rel
-          W=$(ls rel/*.wasm)
-          gzip -9 -c "$W" > wasm.gz
-          brotli -q 11 -c "$W" > wasm.br || true
-          printf "raw    %s\n" "$(stat -c %s "$W")"
-          printf "gzip   %s\n" "$(stat -c %s wasm.gz)"
-          test -s wasm.br && printf "brotli %s\n" "$(stat -c %s wasm.br)"
-          rm -rf rel wasm.gz wasm.br
-
-      - uses: actions/upload-artifact@v4
+      - name: Download template and size report
+        uses: actions/upload-artifact@v4
         with:
-          name: catcafematch_web_template_4_6
-          path: out/*.zip
-          retention-days: 90
+          name: gem-workshop-web-${{ inputs.godot_ref }}
+          path: |
+            out/web_nothreads_release.zip
+            out/size_report.json
+            out/source_commit.txt
+            out/compiler_version.txt
+            out/scons_version.txt
+            out/GemWorkshop_web.gdbuild
+            out/GemWorkshop_web.py
+          if-no-files-found: error
+          retention-days: 30
