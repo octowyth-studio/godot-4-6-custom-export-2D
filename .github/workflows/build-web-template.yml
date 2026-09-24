@@ -1,4 +1,4 @@
-name: Build compatible Gem Workshop Web template
+name: Build Gem Workshop Web release and debug templates
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,9 +65,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/scons_cache
-          key: gem-web-v2-${{ runner.os }}-${{ inputs.godot_ref }}-${{ env.EMSDK_VERSION }}-${{ hashFiles('GemWorkshop_web.gdbuild', 'GemWorkshop_web.py', 'build_template.sh') }}
+          key: gem-web-v3-both-${{ runner.os }}-${{ inputs.godot_ref }}-${{ env.EMSDK_VERSION }}-${{ hashFiles('GemWorkshop_web.gdbuild', 'GemWorkshop_web.py', 'build_template.sh', 'package_template.py') }}
 
-      - name: Compile release template
+      - name: Compile release and debug templates
         run: bash build_template.sh godot out
 
       - name: Record source and compiler versions
@@ -77,12 +77,13 @@ jobs:
           scons --version > out/scons_version.txt
           cp GemWorkshop_web.gdbuild GemWorkshop_web.py out/
 
-      - name: Download template and size report
+      - name: Download both templates and size report
         uses: actions/upload-artifact@v4
         with:
-          name: gem-workshop-compatible-web-${{ inputs.godot_ref }}
+          name: gem-workshop-web-release-debug-${{ inputs.godot_ref }}
           path: |
             out/web_nothreads_release.zip
+            out/web_nothreads_debug.zip
             out/size_report.json
             out/source_commit.txt
             out/compiler_version.txt
