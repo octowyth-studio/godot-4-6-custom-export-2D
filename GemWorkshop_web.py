@@ -1,11 +1,13 @@
-optimize = "size_extra"
+optimize = "size"
 lto = "thin"
 debug_symbols = False
 threads = False
 dlink_enabled = False
 javascript_eval = True
-module_text_server_adv_enabled = False
-module_text_server_fb_enabled = True
+wasm_simd = False
+initial_memory = 32
+module_text_server_adv_enabled = True
+module_text_server_fb_enabled = False
 module_freetype_enabled = True
 module_msdfgen_enabled = True
 module_gdscript_enabled = True
